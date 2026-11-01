@@ -1,0 +1,257 @@
+// prisma/schema.prisma
+// NexCal v2.0 — Multi-Provider Booking System
+// Supports Organizations with multiple Providers (Staff)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// MODEL: Organization (Bisnis / Klinik / Studio)
+// ============================================================
+// Entitas induk yang menaungi semua staf dan layanan.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique  // URL-friendly: "barbershop-jaya"
+  logoUrl   String?  @map("logo_url")
+
+  description String @default("")
+  brandColor String @default("#0d9488") @map("brand_color")
+  contactPhone String? @map("contact_phone")
+  plan String @default("INDIVIDUAL")
+  subscriptionStatus String @default("TRIAL") @map("subscription_status")
+  trialEndsAt DateTime @default(dbgenerated("now() + interval '14 days'")) @map("trial_ends_at")
+  suspended Boolean @default(false)
+  customers Customer[]
+
+  // Integration: MultiWA (WhatsApp Gateway)
+  multiwaUrl       String?  @map("multiwa_url")
+  multiwaApiKey    String?  @map("multiwa_api_key")
+  multiwaSessionId String?  @map("multiwa_session_id")
+
+  // Integration: Google Calendar OAuth
+  gcalClientId     String?  @map("gcal_client_id")
+  gcalClientSecret String?  @map("gcal_client_secret")
+
+  // Integration: Midtrans Payment Gateway
+  midtransServerKey  String?  @map("midtrans_server_key")
+  midtransClientKey  String?  @map("midtrans_client_key")
+  midtransIsProd     Boolean  @default(false) @map("midtrans_is_prod")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  members User[]
+
+  @@map("organizations")
+}
+
+// ============================================================
+// MODEL: User (Owner / Staff Provider)
+// ============================================================
+// OWNER: melihat semua data organisasi, manage semua staf
+// STAFF: hanya melihat & mengelola data sendiri
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  sessionVersion Int @default(0) @map("session_version")
+  disabled Boolean @default(false)
+  hashedPassword String   @map("hashed_password")
+  name           String
+  role           Role     @default(STAFF)
+  clinicName     String?  @map("clinic_name")
+  clinicAddress  String?  @map("clinic_address")
+  phone          String?
+
+  // Organization
+  organizationId String?       @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id])
+
+  // Google Calendar Integration (OAuth 2.0)
+  googleAccessToken  String?  @map("google_access_token")
+  googleRefreshToken String?  @map("google_refresh_token")
+  googleTokenExpiry  DateTime? @map("google_token_expiry")
+
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  schedules     Schedule[]
+  dateOverrides DateOverride[]
+  bookings      Booking[]
+  serviceTypes  ServiceType[]
+
+  @@map("users")
+}
+
+enum Role {
+  OWNER
+  STAFF
+}
+
+// ============================================================
+// MODEL: ServiceType (Jenis Layanan)
+// ============================================================
+// Jenis layanan yang ditawarkan, menentukan durasi slot.
+model ServiceType {
+  id            String  @id @default(cuid())
+  name          String
+  duration      Int     // Durasi dalam menit (15, 30, 45, 60)
+  bufferTime    Int     @default(0) @map("buffer_time") // Jeda setelah layanan (menit)
+  price         Int     @default(0) // Harga layanan (Rupiah). 0 = gratis
+  dpPercentage  Int     @default(0) @map("dp_percentage") // Persentase DP (0-100). 0 = bayar penuh
+  description   String?
+  isActive      Boolean @default(true) @map("is_active")
+  isVirtual     Boolean @default(false) @map("is_virtual") // Konsultasi online → auto Google Meet
+  color         String? // Warna hex untuk kalender UI
+
+  // Relations
+  userId   String    @map("user_id")
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@map("service_types")
+}
+
+// ============================================================
+// MODEL: Schedule (Jam Operasional Mingguan)
+// ============================================================
+// Mengatur ketersediaan provider per hari dalam seminggu.
+model Schedule {
+  id        String  @id @default(cuid())
+  dayOfWeek Int     @map("day_of_week") // 0=Minggu, 1=Senin, ..., 6=Sabtu
+  startTime String  @map("start_time")  // Format "HH:mm" -> "08:00"
+  endTime   String  @map("end_time")    // Format "HH:mm" -> "12:00"
+  isActive  Boolean @default(true) @map("is_active")
+
+  // Relations
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Cegah duplikasi sesi pada hari & waktu yang sama
+  @@unique([userId, dayOfWeek, startTime])
+  @@map("schedules")
+}
+
+// ============================================================
+// MODEL: DateOverride (Override Tanggal Spesifik)
+// ============================================================
+model DateOverride {
+  id        String   @id @default(cuid())
+  date      DateTime @db.Date
+  isBlocked Boolean  @default(true) @map("is_blocked")
+  startTime String?  @map("start_time")
+  endTime   String?  @map("end_time")
+  reason    String?
+
+  // Relations
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@map("date_overrides")
+}
+
+// ============================================================
+// MODEL: Booking (Reservasi)
+// ============================================================
+model Booking {
+  id              String        @id @default(cuid())
+  status          BookingStatus @default(PENDING)
+  date            DateTime      @db.Date
+  startTime       DateTime      @map("start_time")
+  endTime         DateTime      @map("end_time")
+
+  // Data Pelanggan
+  patientName     String        @map("patient_name")
+  patientPhone    String        @map("patient_phone")
+  patientNotes    String?       @map("patient_notes")
+
+  // Payment (Gateway-Agnostic)
+  paymentStatus   PaymentStatus @default(UNPAID) @map("payment_status")
+  totalPrice      Int           @default(0) @map("total_price")       // Jumlah yang harus dibayar (Rupiah)
+  dpAmount        Int           @default(0) @map("dp_amount")         // Jumlah DP (Rupiah)
+  paymentGateway  String?       @map("payment_gateway")              // 'MIDTRANS', 'XENDIT', dll
+  paymentRefId    String?       @map("payment_ref_id")               // Token/Order ID dari gateway
+  paymentUrl      String?       @map("payment_url")                  // Redirect URL pembayaran
+
+  // Metadata
+  cancelReason    String?       @map("cancel_reason")
+  managementToken String        @unique @default(uuid()) @map("management_token")
+  meetingUrl      String?       @map("meeting_url")
+  rescheduleCount Int           @default(0) @map("reschedule_count")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  userId        String      @map("user_id")
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceTypeId String      @map("service_type_id")
+  serviceType   ServiceType @relation(fields: [serviceTypeId], references: [id])
+
+  // Double-booking dicegah di level aplikasi (Lapis 2 di createBookingAction)
+  // dengan filter status ['PENDING', 'CONFIRMED'] — bukan di level DB constraint,
+  // karena slot dari booking CANCELLED harus bisa dipakai kembali.
+  @@index([userId, date, status])
+  @@map("bookings")
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  REFUNDED
+  FAILED
+}
+
+model Customer {
+  id String @id @default(cuid())
+  organizationId String @map("organization_id")
+  organization Organization @relation(fields: [organizationId], references: [id])
+  name String
+  phone String
+  email String?
+  notes String @default("")
+  preferences String @default("")
+  consent Boolean @default(false)
+  optedOut Boolean @default(false) @map("opted_out")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@unique([organizationId, phone])
+  @@map("customers")
+}
+
+model AccessToken {
+  id String @id @default(cuid())
+  tokenHash String @unique @map("token_hash")
+  kind String
+  email String
+  organizationId String? @map("organization_id")
+  expiresAt DateTime @map("expires_at")
+  usedAt DateTime? @map("used_at")
+  @@map("access_tokens")
+}
+
+model AuditEvent {
+  id String @id @default(cuid())
+  organizationId String @map("organization_id")
+  actorId String? @map("actor_id")
+  action String
+  entityId String? @map("entity_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([organizationId, createdAt])
+  @@map("audit_events")
+}

@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'./tests',testMatch:'**/*.spec.ts',workers:1,webServer:{command:'npm run dev -- --port 3102',url:'http://localhost:3102',reuseExistingServer:true,timeout:60000,env:{AUTH_SECRET:'local-browser-testing-only-secret-1234567890',AUTH_TRUST_HOST:'true',NEXT_PUBLIC_APP_URL:'http://localhost:3102'}},retries:0,timeout:90000,use:{baseURL:process.env.E2E_BASE_URL??'http://localhost:3102',trace:'retain-on-failure'},reporter:'list'});
